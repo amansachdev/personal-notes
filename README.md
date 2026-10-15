@@ -1,8 +1,8 @@
 # Notepad
 
-A simple, single-page shared notepad. Open the link and type or paste text; it saves automatically and syncs across devices. No account or sign-in is required.
+A simple shared notepad with multiple tabs. Open the link and type or paste text; tabs save automatically and sync across devices. Add, rename, and delete as many tabs as you need. No account or sign-in is required.
 
-The shared note is stored in Cloud Firestore at `notes/shared`. Firestore rules allow anyone to read and update that document, while blocking deletion and writes with a different shape. **Anyone who can access the app can read and edit the same note. Do not put private or sensitive information here.** The GitHub repository contains the app code, not the note contents.
+Tabs are stored in Cloud Firestore in the `notepadTabs` collection. **Anyone who can access the app can read, edit, create, rename, and delete tabs. Do not put private or sensitive information here.** The GitHub repository contains the app code, not note contents.
 
 ## Firebase setup
 
@@ -14,7 +14,7 @@ The app uses the Firebase web configuration for the `note-taker-692b8` project. 
 | `VITE_FIREBASE_PROJECT_ID` | Project ID |
 | `VITE_FIREBASE_APP_ID` | Web app ID |
 
-The Firebase web configuration is public by design; Firestore rules control access. The default Firestore database is in Mumbai (`asia-south1`) on the Standard edition and is eligible for the free tier. Billing is not needed for this app's use of the free tier. See [Firestore quotas](https://firebase.google.com/docs/firestore/quotas).
+The Firebase web configuration is public by design; Firestore rules control data access. The default Firestore database is in Mumbai (`asia-south1`) on the Standard edition and is eligible for the free tier. Usage is subject to [Firestore quotas](https://firebase.google.com/docs/firestore/quotas).
 
 ## Run locally
 

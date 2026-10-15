@@ -1,13 +1,15 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /notes/shared {
-      allow read: if true;
-      allow create, update: if request.resource.data.keys().hasAll(['text', 'updatedAt'])
-        && request.resource.data.keys().hasOnly(['text', 'updatedAt'])
+    match /notepadTabs/{tabId} {
+      allow read, delete: if true;
+      allow create, update: if request.resource.data.keys().hasAll(['title', 'text', 'createdAt', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['title', 'text', 'createdAt', 'updatedAt'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() <= 80
         && request.resource.data.text is string
+        && request.resource.data.createdAt is timestamp
         && request.resource.data.updatedAt is timestamp;
-      allow delete: if false;
     }
   }
 }
