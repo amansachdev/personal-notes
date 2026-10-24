@@ -10,7 +10,9 @@ import {
   setDoc,
   updateDoc,
 } from 'firebase/firestore';
+import { createRichEditor } from './editor.js';
 import { configured, db } from './firebase.js';
+import { escapeHtml } from './markdown.js';
 import './style.css';
 
 const root = document.querySelector('#app');
@@ -31,8 +33,33 @@ function startApp() {
   root.innerHTML = `<main class="notepad">
     <header><div class="brand"><span class="mark">n</span> notepad</div><div class="sync" aria-live="polite"><i></i><span id="status">Loading notes…</span></div></header>
     <div class="tab-row"><nav class="tab-list" id="tab-list" role="tablist" aria-label="Notes"></nav><button id="add-tab" class="add-tab" type="button" title="Create a new tab">＋ <span>New tab</span></button></div>
-    <textarea id="note" placeholder="Start typing or paste your text here…" aria-label="Note text" spellcheck="true" disabled></textarea>
-    <footer><span>Anyone with this link can view and edit these notes</span><span id="count"></span></footer>
+    <div class="format-toolbar" id="format-toolbar" role="toolbar" aria-label="Text formatting">
+      <div class="toolbar-group">
+        <button type="button" class="tool-btn" data-cmd="h1" title="Heading 1 (# + space)">H1</button>
+        <button type="button" class="tool-btn" data-cmd="h2" title="Heading 2 (## + space)">H2</button>
+        <button type="button" class="tool-btn" data-cmd="h3" title="Heading 3 (### + space)">H3</button>
+      </div>
+      <span class="toolbar-divider" aria-hidden="true"></span>
+      <div class="toolbar-group">
+        <button type="button" class="tool-btn tool-bold" data-cmd="bold" title="Bold (⌘/Ctrl+B or **text**)">B</button>
+        <button type="button" class="tool-btn tool-italic" data-cmd="italic" title="Italic (⌘/Ctrl+I or *text*)">I</button>
+        <button type="button" class="tool-btn tool-strike" data-cmd="strikeThrough" title="Strikethrough (⌘/Ctrl+Shift+X or ~~text~~)">S</button>
+        <button type="button" class="tool-btn tool-mono" data-cmd="inlineCode" title="Inline code (⌘/Ctrl+E or \`code\`)">&lt;/&gt;</button>
+      </div>
+      <span class="toolbar-divider" aria-hidden="true"></span>
+      <div class="toolbar-group">
+        <button type="button" class="tool-btn" data-cmd="taskList" title="Checklist (- [ ] + space)">☑ <span>Task</span></button>
+        <button type="button" class="tool-btn" data-cmd="ul" title="Bullet list (- + space)">• <span>List</span></button>
+        <button type="button" class="tool-btn" data-cmd="ol" title="Numbered list (1. + space)">1. <span>List</span></button>
+      </div>
+      <span class="toolbar-divider" aria-hidden="true"></span>
+      <div class="toolbar-group">
+        <button type="button" class="tool-btn" data-cmd="blockquote" title="Quote (> + space)">❝ <span>Quote</span></button>
+        <button type="button" class="tool-btn tool-mono" data-cmd="codeBlock" title="Code block (\`\`\` + space)">{ } <span>Code</span></button>
+      </div>
+    </div>
+    <div id="note" class="note-editor" contenteditable="false" role="textbox" aria-multiline="true" aria-label="Note text" data-placeholder="Start typing or paste Markdown here… (try # Heading, - [ ] Task, **bold**)" spellcheck="true" data-empty="true" data-disabled="true"></div>
+    <footer><span>Anyone with this link can view and edit these notes · Markdown paste &amp; shortcuts supported</span><span id="count"></span></footer>
   </main>
   <dialog id="rename-dialog" class="rename-dialog">
     <form id="rename-form">
@@ -42,7 +69,8 @@ function startApp() {
     </form>
   </dialog>`;
 
-  const textarea = document.querySelector('#note');
+  const editorEl = document.querySelector('#note');
+  const toolbarEl = document.querySelector('#format-toolbar');
   const tabList = document.querySelector('#tab-list');
   const status = document.querySelector('#status');
   const count = document.querySelector('#count');
@@ -55,34 +83,48 @@ function startApp() {
     status.dataset.state = state;
   }
 
-  function updateCount() {
-    count.textContent = `${textarea.value.length.toLocaleString()} characters`;
-  }
-
   function activeTab() {
     return tabs.find((tab) => tab.id === activeTabId) || null;
   }
 
-  function syncEditor(force = false, preserveSelection = false) {
+  const richEditor = createRichEditor({
+    editor: editorEl,
+    toolbar: toolbarEl,
+    onChange(serializedHtml) {
+      const tab = activeTab();
+      if (!tab) return;
+      tab.text = serializedHtml;
+      dirtyTabs.add(tab.id);
+      setStatus('Saving…');
+      updateCount();
+      clearTimeout(saveTimers.get(tab.id));
+      saveTimers.set(tab.id, setTimeout(() => saveTab(tab.id), 500));
+    },
+  });
+
+  function updateCount() {
+    count.textContent = `${richEditor.getCharacterCount().toLocaleString()} characters`;
+  }
+
+  function syncEditor(force = false) {
     const tab = activeTab();
-    textarea.disabled = !tab;
+    richEditor.setDisabled(!tab);
     if (!tab) {
-      textarea.value = '';
+      richEditor.setValue('');
       count.textContent = '';
       return;
     }
-    if (force || (!dirtyTabs.has(tab.id) && document.activeElement !== textarea)) {
-      const hadFocus = document.activeElement === textarea;
-      const selectionStart = textarea.selectionStart;
-      const selectionEnd = textarea.selectionEnd;
-      textarea.value = tab.text || '';
-      updateCount();
-      if (preserveSelection && hadFocus) {
-        textarea.setSelectionRange(
-          Math.min(selectionStart, textarea.value.length),
-          Math.min(selectionEnd, textarea.value.length),
-        );
+    const incomingText = tab.text || '';
+    if (force) {
+      if (richEditor.isFocused() && richEditor.getValue() === incomingText) {
+        updateCount();
+        return;
       }
+      richEditor.setValue(incomingText);
+      updateCount();
+    } else if (!dirtyTabs.has(tab.id) && !richEditor.isFocused()) {
+      richEditor.setValue(incomingText);
+      updateCount();
     }
   }
 
@@ -180,24 +222,13 @@ function startApp() {
       await createTab();
       renderTabs();
       syncEditor(true);
-      textarea.focus();
+      richEditor.focus();
     } catch (error) {
       setStatus('Could not create tab', 'error');
       console.error(error);
     } finally {
       event.currentTarget.disabled = false;
     }
-  });
-
-  textarea.addEventListener('input', () => {
-    const tab = activeTab();
-    if (!tab) return;
-    tab.text = textarea.value;
-    dirtyTabs.add(tab.id);
-    setStatus('Saving…');
-    updateCount();
-    clearTimeout(saveTimers.get(tab.id));
-    saveTimers.set(tab.id, setTimeout(() => saveTab(tab.id), 500));
   });
 
   document.querySelector('#rename-form').addEventListener('submit', async (event) => {
@@ -240,21 +271,15 @@ function startApp() {
       activeTabId = tabs[0].id;
       syncEditor(true);
     } else if (!dirtyTabs.has(activeTabId)) {
-      syncEditor(true, true);
+      syncEditor(true);
     }
     renderTabs();
-    textarea.disabled = false;
+    richEditor.setDisabled(false);
     if (!dirtyTabs.has(activeTabId)) setStatus('All changes saved');
   }, (error) => {
     setStatus('Sync unavailable', 'error');
     console.error(error);
   });
-}
-
-function escapeHtml(value = '') {
-  return String(value).replace(/[&<>"']/g, (char) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[char]));
 }
 
 if (!configured) showSetup();
