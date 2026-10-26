@@ -10,6 +10,12 @@ import {
   setDoc,
   updateDoc,
 } from 'firebase/firestore';
+import {
+  CLIPBOARD_DOC_ID,
+  createDataClipboard,
+  parseClipboardItems,
+  serializeClipboardItems,
+} from './clipboard.js';
 import { createRichEditor } from './editor.js';
 import { configured, db } from './firebase.js';
 import { escapeHtml } from './markdown.js';
@@ -22,6 +28,7 @@ const tabRef = (id) => doc(db, 'notepadTabs', id);
 let tabs = [];
 let activeTabId = null;
 let seedInProgress = false;
+let clipboardCreatedAt = null;
 const dirtyTabs = new Set();
 const saveTimers = new Map();
 
@@ -31,41 +38,93 @@ function showSetup() {
 
 function startApp() {
   root.innerHTML = `<main class="notepad">
-    <header><div class="brand"><span class="mark">n</span> notepad</div><div class="sync" aria-live="polite"><i></i><span id="status">Loading notes…</span></div></header>
-    <div class="tab-row"><nav class="tab-list" id="tab-list" role="tablist" aria-label="Notes"></nav><button id="add-tab" class="add-tab" type="button" title="Create a new tab">＋ <span>New tab</span></button></div>
-    <div class="format-toolbar" id="format-toolbar" role="toolbar" aria-label="Text formatting">
-      <div class="toolbar-group">
-        <button type="button" class="tool-btn" data-cmd="h1" title="Heading 1 (# + space)">H1</button>
-        <button type="button" class="tool-btn" data-cmd="h2" title="Heading 2 (## + space)">H2</button>
-        <button type="button" class="tool-btn" data-cmd="h3" title="Heading 3 (### + space)">H3</button>
+    <header>
+      <div class="brand"><span class="mark">n</span> notepad</div>
+      <div class="header-right">
+        <div class="sync" aria-live="polite"><i></i><span id="status">Loading notes…</span></div>
+        <button id="toggle-data-panel" class="data-toggle-btn" type="button" title="Toggle persistent Data Clipboard" aria-expanded="true">
+          <span class="data-toggle-icon">📋</span>
+          <span>Data</span>
+          <b id="data-count-badge" class="data-badge">0</b>
+        </button>
       </div>
-      <span class="toolbar-divider" aria-hidden="true"></span>
-      <div class="toolbar-group">
-        <button type="button" class="tool-btn tool-bold" data-cmd="bold" title="Bold (⌘/Ctrl+B or **text**)">B</button>
-        <button type="button" class="tool-btn tool-italic" data-cmd="italic" title="Italic (⌘/Ctrl+I or *text*)">I</button>
-        <button type="button" class="tool-btn tool-strike" data-cmd="strikeThrough" title="Strikethrough (⌘/Ctrl+Shift+X or ~~text~~)">S</button>
-        <button type="button" class="tool-btn tool-mono" data-cmd="inlineCode" title="Inline code (⌘/Ctrl+E or \`code\`)">&lt;/&gt;</button>
-      </div>
-      <span class="toolbar-divider" aria-hidden="true"></span>
-      <div class="toolbar-group">
-        <button type="button" class="tool-btn" data-cmd="taskList" title="Checklist (- [ ] + space)">☑ <span>Task</span></button>
-        <button type="button" class="tool-btn" data-cmd="ul" title="Bullet list (- + space)">• <span>List</span></button>
-        <button type="button" class="tool-btn" data-cmd="ol" title="Numbered list (1. + space)">1. <span>List</span></button>
-      </div>
-      <span class="toolbar-divider" aria-hidden="true"></span>
-      <div class="toolbar-group">
-        <button type="button" class="tool-btn" data-cmd="blockquote" title="Quote (> + space)">❝ <span>Quote</span></button>
-        <button type="button" class="tool-btn tool-mono" data-cmd="codeBlock" title="Code block (\`\`\` + space)">{ } <span>Code</span></button>
-      </div>
+    </header>
+    <div class="workspace">
+      <section class="notes-pane">
+        <div class="tab-row"><nav class="tab-list" id="tab-list" role="tablist" aria-label="Notes"></nav><button id="add-tab" class="add-tab" type="button" title="Create a new tab">＋ <span>New tab</span></button></div>
+        <div class="format-toolbar" id="format-toolbar" role="toolbar" aria-label="Text formatting">
+          <div class="toolbar-group">
+            <button type="button" class="tool-btn" data-cmd="h1" title="Heading 1 (# + space)">H1</button>
+            <button type="button" class="tool-btn" data-cmd="h2" title="Heading 2 (## + space)">H2</button>
+            <button type="button" class="tool-btn" data-cmd="h3" title="Heading 3 (### + space)">H3</button>
+          </div>
+          <span class="toolbar-divider" aria-hidden="true"></span>
+          <div class="toolbar-group">
+            <button type="button" class="tool-btn tool-bold" data-cmd="bold" title="Bold (⌘/Ctrl+B or **text**)">B</button>
+            <button type="button" class="tool-btn tool-italic" data-cmd="italic" title="Italic (⌘/Ctrl+I or *text*)">I</button>
+            <button type="button" class="tool-btn tool-strike" data-cmd="strikeThrough" title="Strikethrough (⌘/Ctrl+Shift+X or ~~text~~)">S</button>
+            <button type="button" class="tool-btn tool-mono" data-cmd="inlineCode" title="Inline code (⌘/Ctrl+E or \`code\`)">&lt;/&gt;</button>
+          </div>
+          <span class="toolbar-divider" aria-hidden="true"></span>
+          <div class="toolbar-group">
+            <button type="button" class="tool-btn" data-cmd="taskList" title="Checklist (- [ ] + space)">☑ <span>Task</span></button>
+            <button type="button" class="tool-btn" data-cmd="ul" title="Bullet list (- + space)">• <span>List</span></button>
+            <button type="button" class="tool-btn" data-cmd="ol" title="Numbered list (1. + space)">1. <span>List</span></button>
+          </div>
+          <span class="toolbar-divider" aria-hidden="true"></span>
+          <div class="toolbar-group">
+            <button type="button" class="tool-btn" data-cmd="blockquote" title="Quote (> + space)">❝ <span>Quote</span></button>
+            <button type="button" class="tool-btn tool-mono" data-cmd="codeBlock" title="Code block (\`\`\` + space)">{ } <span>Code</span></button>
+          </div>
+        </div>
+        <div id="note" class="note-editor" contenteditable="false" role="textbox" aria-multiline="true" aria-label="Note text" data-placeholder="Start typing or paste Markdown here… (try # Heading, - [ ] Task, **bold**)" spellcheck="true" data-empty="true" data-disabled="true"></div>
+      </section>
+      <aside id="data-panel" class="data-panel open" aria-label="Persistent Data Clipboard">
+        <div class="data-panel-header">
+          <div>
+            <h2 class="data-panel-title">Data Clipboard</h2>
+            <p class="data-panel-subtitle">Click any block to copy instantly</p>
+          </div>
+          <div class="data-panel-header-actions">
+            <button id="add-data-btn" class="add-data-btn" type="button" title="Add new clipboard item">＋ Add item</button>
+            <button id="close-data-panel" class="close-data-btn" type="button" title="Hide Data panel" aria-label="Hide Data panel">×</button>
+          </div>
+        </div>
+        <div class="data-controls">
+          <input id="data-search" class="data-search" type="search" placeholder="Filter links, addresses, text…" autocomplete="off" />
+          <div id="data-filters" class="data-filters"></div>
+        </div>
+        <div id="data-list" class="data-list"></div>
+      </aside>
     </div>
-    <div id="note" class="note-editor" contenteditable="false" role="textbox" aria-multiline="true" aria-label="Note text" data-placeholder="Start typing or paste Markdown here… (try # Heading, - [ ] Task, **bold**)" spellcheck="true" data-empty="true" data-disabled="true"></div>
-    <footer><span>Anyone with this link can view and edit these notes · Markdown paste &amp; shortcuts supported</span><span id="count"></span></footer>
+    <footer><span>Anyone with this link can view and edit these notes · Markdown &amp; Data Clipboard synced</span><span id="count"></span></footer>
   </main>
   <dialog id="rename-dialog" class="rename-dialog">
     <form id="rename-form">
       <label for="rename-input">Name this tab</label>
       <input id="rename-input" name="title" maxlength="80" autocomplete="off" required />
       <div class="dialog-actions"><button class="cancel-button" type="button" id="cancel-rename">Cancel</button><button class="button" type="submit">Save name</button></div>
+    </form>
+  </dialog>
+  <dialog id="data-dialog" class="rename-dialog data-dialog">
+    <form id="data-form">
+      <label id="data-dialog-title">Add to Data Clipboard</label>
+      <div class="field-group">
+        <span class="field-label">Category</span>
+        <div id="data-category-chips" class="category-chips"></div>
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="data-label-input">Label</label>
+        <input id="data-label-input" name="label" maxlength="60" autocomplete="off" placeholder="e.g. LinkedIn Profile, Home Address" required />
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="data-value-input">Content to copy</label>
+        <textarea id="data-value-input" name="value" rows="3" placeholder="Paste URL, address, or text…" required></textarea>
+      </div>
+      <div class="dialog-actions">
+        <button class="cancel-button" type="button" id="cancel-data-dialog">Cancel</button>
+        <button class="button" type="submit">Save item</button>
+      </div>
     </form>
   </dialog>`;
 
@@ -85,6 +144,39 @@ function startApp() {
 
   function activeTab() {
     return tabs.find((tab) => tab.id === activeTabId) || null;
+  }
+
+  const dataClipboard = createDataClipboard({
+    panel: document.querySelector('#data-panel'),
+    toggleBtn: document.querySelector('#toggle-data-panel'),
+    countBadge: document.querySelector('#data-count-badge'),
+    dialog: document.querySelector('#data-dialog'),
+    onStatusChange(message, state = '') {
+      setStatus(message, state);
+    },
+    async onSaveItems(nextItems) {
+      const serialized = serializeClipboardItems(nextItems);
+      localStorage.setItem('notepad_clipboard_backup', serialized);
+      setStatus('Saving clipboard…');
+      try {
+        await setDoc(tabRef(CLIPBOARD_DOC_ID), {
+          title: CLIPBOARD_DOC_ID,
+          text: serialized,
+          createdAt: clipboardCreatedAt || serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        setStatus('All changes saved');
+      } catch (error) {
+        setStatus('Could not sync clipboard', 'error');
+        console.error(error);
+      }
+    },
+  });
+
+  // Load cached clipboard items immediately while Firestore connects
+  const cachedClipboard = localStorage.getItem('notepad_clipboard_backup');
+  if (cachedClipboard) {
+    dataClipboard.setItems(parseClipboardItems(cachedClipboard));
   }
 
   const richEditor = createRichEditor({
@@ -134,7 +226,7 @@ function startApp() {
       return `<div class="tab ${selected ? 'active' : ''}" role="presentation">
         <button class="tab-select" type="button" role="tab" aria-selected="${selected}" aria-controls="note" data-action="select" data-id="${tab.id}" title="${escapeHtml(tab.title)}">${escapeHtml(tab.title || 'Untitled')}</button>
         <button class="tab-action rename-tab" type="button" data-action="rename" data-id="${tab.id}" aria-label="Rename ${escapeHtml(tab.title || 'tab')}" title="Rename tab">✎</button>
-        <button class="tab-action delete-tab" type="button" data-action="delete" data-id="${tab.id}" aria-label="Delete ${escapeHtml(tab.title || 'tab')}" title="Delete tab">×</button>
+        <button class="tab-action delete-tab" type="button" data-id="${tab.id}" data-action="delete" aria-label="Delete ${escapeHtml(tab.title || 'tab')}" title="Delete tab">×</button>
       </div>`;
     }).join('');
     tabList.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -249,7 +341,22 @@ function startApp() {
 
   const tabsQuery = query(tabsCollection(), orderBy('createdAt', 'asc'));
   onSnapshot(tabsQuery, async (snapshot) => {
-    if (snapshot.empty) {
+    const allDocs = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+    const clipboardDoc = allDocs.find(
+      (item) => item.id === CLIPBOARD_DOC_ID || item.title === CLIPBOARD_DOC_ID,
+    );
+    const noteDocs = allDocs.filter(
+      (item) => item.id !== CLIPBOARD_DOC_ID && item.title !== CLIPBOARD_DOC_ID,
+    );
+
+    if (clipboardDoc) {
+      clipboardCreatedAt = clipboardDoc.createdAt || null;
+      const parsedItems = parseClipboardItems(clipboardDoc.text);
+      dataClipboard.setItems(parsedItems);
+      localStorage.setItem('notepad_clipboard_backup', clipboardDoc.text || '[]');
+    }
+
+    if (noteDocs.length === 0) {
       if (!seedInProgress) {
         seedInProgress = true;
         try {
@@ -266,7 +373,7 @@ function startApp() {
       return;
     }
 
-    tabs = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+    tabs = noteDocs;
     if (!activeTabId || !tabs.some((tab) => tab.id === activeTabId)) {
       activeTabId = tabs[0].id;
       syncEditor(true);
