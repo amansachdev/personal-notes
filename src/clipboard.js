@@ -1,6 +1,6 @@
 import { escapeHtml } from './markdown.js';
 
-export const CLIPBOARD_DOC_ID = '__clipboard_data__';
+export const CLIPBOARD_DOC_ID = 'clipboard_data';
 
 export const CATEGORIES = [
   { id: 'linkedin', label: 'LinkedIn', icon: 'in', placeholderLabel: 'LinkedIn Profile', placeholderValue: 'https://linkedin.com/in/your-handle' },
@@ -66,7 +66,8 @@ export function createDataClipboard({
   let copiedTimer = null;
 
   const isOpenKey = 'notepad_data_panel_open';
-  let isOpen = localStorage.getItem(isOpenKey) !== 'false';
+  const storedOpen = localStorage.getItem(isOpenKey);
+  let isOpen = storedOpen !== null ? storedOpen === 'true' : window.innerWidth > 600;
 
   const listEl = panel.querySelector('#data-list');
   const filterBar = panel.querySelector('#data-filters');

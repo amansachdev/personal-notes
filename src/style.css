@@ -553,7 +553,7 @@ button {
 
 /* Persistent Data Clipboard Panel */
 .data-panel {
-  width: 340px;
+  width: 315px;
   flex: none;
   border-left: 1px solid #e7e9e3;
   background: #fafaf7;
@@ -1026,7 +1026,7 @@ button {
   background: #f6f6f3;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 600px) {
   .data-panel {
     position: absolute;
     inset: 0;
@@ -1034,9 +1034,6 @@ button {
     z-index: 20;
     border-left: 0;
   }
-}
-
-@media (max-width: 600px) {
   .notepad header {
     padding: 0 14px;
     height: 49px;

@@ -28,7 +28,8 @@ const tabRef = (id) => doc(db, 'notepadTabs', id);
 let tabs = [];
 let activeTabId = null;
 let seedInProgress = false;
-let clipboardCreatedAt = null;
+let clipboardDocExists = false;
+let clipboardDirty = false;
 const dirtyTabs = new Set();
 const saveTimers = new Map();
 
@@ -146,6 +147,35 @@ function startApp() {
     return tabs.find((tab) => tab.id === activeTabId) || null;
   }
 
+  async function persistClipboardToFirestore(items) {
+    const serialized = serializeClipboardItems(items);
+    localStorage.setItem('notepad_clipboard_backup', serialized);
+    clipboardDirty = true;
+    setStatus('Saving clipboard…');
+    try {
+      if (clipboardDocExists) {
+        await updateDoc(tabRef(CLIPBOARD_DOC_ID), {
+          text: serialized,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(tabRef(CLIPBOARD_DOC_ID), {
+          title: CLIPBOARD_DOC_ID,
+          text: serialized,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        clipboardDocExists = true;
+      }
+      clipboardDirty = false;
+      setStatus('All changes saved');
+    } catch (error) {
+      clipboardDirty = false;
+      setStatus('Could not sync clipboard', 'error');
+      console.error(error);
+    }
+  }
+
   const dataClipboard = createDataClipboard({
     panel: document.querySelector('#data-panel'),
     toggleBtn: document.querySelector('#toggle-data-panel'),
@@ -155,21 +185,7 @@ function startApp() {
       setStatus(message, state);
     },
     async onSaveItems(nextItems) {
-      const serialized = serializeClipboardItems(nextItems);
-      localStorage.setItem('notepad_clipboard_backup', serialized);
-      setStatus('Saving clipboard…');
-      try {
-        await setDoc(tabRef(CLIPBOARD_DOC_ID), {
-          title: CLIPBOARD_DOC_ID,
-          text: serialized,
-          createdAt: clipboardCreatedAt || serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        setStatus('All changes saved');
-      } catch (error) {
-        setStatus('Could not sync clipboard', 'error');
-        console.error(error);
-      }
+      await persistClipboardToFirestore(nextItems);
     },
   });
 
@@ -349,11 +365,31 @@ function startApp() {
       (item) => item.id !== CLIPBOARD_DOC_ID && item.title !== CLIPBOARD_DOC_ID,
     );
 
-    if (clipboardDoc) {
-      clipboardCreatedAt = clipboardDoc.createdAt || null;
-      const parsedItems = parseClipboardItems(clipboardDoc.text);
-      dataClipboard.setItems(parsedItems);
-      localStorage.setItem('notepad_clipboard_backup', clipboardDoc.text || '[]');
+    clipboardDocExists = Boolean(clipboardDoc);
+
+    if (!clipboardDirty) {
+      const remoteItems = clipboardDoc ? parseClipboardItems(clipboardDoc.text) : [];
+      const localItems = parseClipboardItems(localStorage.getItem('notepad_clipboard_backup') || '');
+      const migrated = localStorage.getItem('notepad_clipboard_migrated_v2') === 'true';
+
+      // One-time merge of any previously unsynced local items into Firestore
+      if (!migrated && localItems.length > 0) {
+        localStorage.setItem('notepad_clipboard_migrated_v2', 'true');
+        const remoteIds = new Set(remoteItems.map((item) => item.id));
+        const unsyncedLocal = localItems.filter((item) => !remoteIds.has(item.id));
+        if (unsyncedLocal.length > 0) {
+          const merged = [...unsyncedLocal, ...remoteItems];
+          dataClipboard.setItems(merged);
+          persistClipboardToFirestore(merged);
+        } else {
+          dataClipboard.setItems(remoteItems);
+          localStorage.setItem('notepad_clipboard_backup', serializeClipboardItems(remoteItems));
+        }
+      } else {
+        localStorage.setItem('notepad_clipboard_migrated_v2', 'true');
+        dataClipboard.setItems(remoteItems);
+        localStorage.setItem('notepad_clipboard_backup', serializeClipboardItems(remoteItems));
+      }
     }
 
     if (noteDocs.length === 0) {
@@ -382,7 +418,7 @@ function startApp() {
     }
     renderTabs();
     richEditor.setDisabled(false);
-    if (!dirtyTabs.has(activeTabId)) setStatus('All changes saved');
+    if (!dirtyTabs.has(activeTabId) && !clipboardDirty) setStatus('All changes saved');
   }, (error) => {
     setStatus('Sync unavailable', 'error');
     console.error(error);
