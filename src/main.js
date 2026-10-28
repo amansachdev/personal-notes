@@ -206,14 +206,32 @@ function startApp() {
       setStatus('Saving…');
       updateCount();
       clearTimeout(saveTimers.get(tab.id));
-      saveTimers.set(tab.id, setTimeout(() => saveTab(tab.id), 500));
+      const id = tab.id;
+      saveTimers.set(id, setTimeout(() => {
+        saveTimers.delete(id);
+        saveTab(id);
+      }, 500));
     },
+  });
+
+  // Remote updates that arrived while you were typing are applied once the editor loses focus,
+  // so the DOM (and your caret) is never replaced mid-edit.
+  let pendingRemoteSync = false;
+  editorEl.addEventListener('focusout', () => {
+    setTimeout(() => {
+      if (pendingRemoteSync && !richEditor.isFocused()) syncEditor();
+    }, 0);
   });
 
   function updateCount() {
     count.textContent = `${richEditor.getCharacterCount().toLocaleString()} characters`;
   }
 
+  /**
+   * Loads the active tab's text into the editor.
+   * force = true: always replace (tab switch / first load).
+   * force = false: only apply remote changes when it is safe (no unsaved edits, editor not focused).
+   */
   function syncEditor(force = false) {
     const tab = activeTab();
     richEditor.setDisabled(!tab);
@@ -223,17 +241,20 @@ function startApp() {
       return;
     }
     const incomingText = tab.text || '';
-    if (force) {
-      if (richEditor.isFocused() && richEditor.getValue() === incomingText) {
-        updateCount();
+    if (!force) {
+      if (dirtyTabs.has(tab.id)) return;
+      if (richEditor.isFocused()) {
+        if (richEditor.getValue() !== incomingText) pendingRemoteSync = true;
         return;
       }
-      richEditor.setValue(incomingText);
-      updateCount();
-    } else if (!dirtyTabs.has(tab.id) && !richEditor.isFocused()) {
-      richEditor.setValue(incomingText);
-      updateCount();
+      if (richEditor.getValue() === incomingText) {
+        pendingRemoteSync = false;
+        return;
+      }
     }
+    pendingRemoteSync = false;
+    richEditor.setValue(incomingText);
+    updateCount();
   }
 
   function renderTabs() {
@@ -264,10 +285,15 @@ function startApp() {
   async function saveTab(id) {
     const tab = tabs.find((item) => item.id === id);
     if (!tab) return;
+    const textToSave = tab.text;
     try {
-      await updateDoc(tabRef(id), { text: tab.text, updatedAt: serverTimestamp() });
-      dirtyTabs.delete(id);
-      if (activeTabId === id) setStatus('All changes saved');
+      await updateDoc(tabRef(id), { text: textToSave, updatedAt: serverTimestamp() });
+      // Only mark clean if nothing new was typed while this save was in flight
+      const current = tabs.find((item) => item.id === id);
+      if (!saveTimers.has(id) && (!current || current.text === textToSave)) {
+        dirtyTabs.delete(id);
+        if (activeTabId === id) setStatus('All changes saved');
+      }
     } catch (error) {
       if (activeTabId === id) setStatus('Could not save', 'error');
       console.error(error);
@@ -409,12 +435,17 @@ function startApp() {
       return;
     }
 
-    tabs = noteDocs;
+    // Keep unsaved local text instead of letting the (older) server copy overwrite it
+    const previousTabs = new Map(tabs.map((tab) => [tab.id, tab]));
+    tabs = noteDocs.map((remote) => {
+      const local = previousTabs.get(remote.id);
+      return local && dirtyTabs.has(remote.id) ? { ...remote, text: local.text } : remote;
+    });
     if (!activeTabId || !tabs.some((tab) => tab.id === activeTabId)) {
       activeTabId = tabs[0].id;
       syncEditor(true);
-    } else if (!dirtyTabs.has(activeTabId)) {
-      syncEditor(true);
+    } else {
+      syncEditor();
     }
     renderTabs();
     richEditor.setDisabled(false);

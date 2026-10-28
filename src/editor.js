@@ -141,20 +141,37 @@ function sanitizeHtml(dirtyHtml) {
 
 /**
  * Ensures all task items in the editor have a valid checkbox and `.task-text` wrapper.
+ *
+ * `fromStorage` = true when loading saved HTML (checked state comes from attributes).
+ * Otherwise the live checkbox `.checked` property is the source of truth, and the DOM is only
+ * touched when something is actually wrong, preserving the caret position while typing.
  */
-function normalizeTaskLists(editor) {
+function normalizeTaskLists(editor, { fromStorage = false } = {}) {
+  const selection = window.getSelection();
+  const savedAnchor =
+    selection && selection.rangeCount && editor.contains(selection.anchorNode)
+      ? { node: selection.anchorNode, offset: selection.anchorOffset }
+      : null;
+  let movedNodes = false;
+
   editor.querySelectorAll('ul.task-list > li, li.task-item').forEach((li) => {
     const parentUl = li.parentElement;
     if (parentUl && parentUl.tagName === 'UL' && !parentUl.classList.contains('task-list')) {
       parentUl.classList.add('task-list');
     }
-    li.classList.add('task-item');
+    if (!li.classList.contains('task-item')) li.classList.add('task-item');
 
     let checkbox = li.querySelector(':scope > input.task-checkbox, :scope > input[type="checkbox"]');
-    const isChecked =
-      li.dataset.checked === 'true' ||
-      (checkbox && (checkbox.checked || checkbox.hasAttribute('checked')));
-    li.dataset.checked = isChecked ? 'true' : 'false';
+    let isChecked;
+    if (!checkbox) {
+      isChecked = li.dataset.checked === 'true';
+    } else if (fromStorage) {
+      isChecked = checkbox.hasAttribute('checked') || li.dataset.checked === 'true';
+    } else {
+      isChecked = checkbox.checked;
+    }
+    const checkedStr = isChecked ? 'true' : 'false';
+    if (li.dataset.checked !== checkedStr) li.dataset.checked = checkedStr;
 
     if (!checkbox) {
       checkbox = document.createElement('input');
@@ -163,11 +180,11 @@ function normalizeTaskLists(editor) {
       checkbox.contentEditable = 'false';
       li.prepend(checkbox);
     } else {
-      checkbox.className = 'task-checkbox';
-      checkbox.contentEditable = 'false';
+      if (checkbox.className !== 'task-checkbox') checkbox.className = 'task-checkbox';
+      if (checkbox.getAttribute('contenteditable') !== 'false') checkbox.contentEditable = 'false';
     }
-    checkbox.checked = Boolean(isChecked);
-    checkbox.toggleAttribute('checked', Boolean(isChecked));
+    if (checkbox.checked !== isChecked) checkbox.checked = isChecked;
+    if (checkbox.hasAttribute('checked') !== isChecked) checkbox.toggleAttribute('checked', isChecked);
 
     let textSpan = li.querySelector(':scope > span.task-text');
     if (!textSpan) {
@@ -175,14 +192,27 @@ function normalizeTaskLists(editor) {
       textSpan.className = 'task-text';
       const otherNodes = Array.from(li.childNodes).filter((n) => n !== checkbox);
       otherNodes.forEach((n) => textSpan.appendChild(n));
-      if (!textSpan.innerHTML.trim()) {
-        textSpan.innerHTML = '<br>';
-      }
+      if (!textSpan.childNodes.length) textSpan.appendChild(document.createElement('br'));
       li.appendChild(textSpan);
-    } else if (!textSpan.innerHTML.trim()) {
-      textSpan.innerHTML = '<br>';
+      movedNodes = true;
+    } else if (!textSpan.childNodes.length) {
+      // Append (instead of resetting innerHTML) so the caret is not thrown out of the span
+      textSpan.appendChild(document.createElement('br'));
     }
   });
+
+  // Restore the caret if moving nodes into a wrapper collapsed the selection
+  if (movedNodes && savedAnchor && savedAnchor.node.isConnected && editor.contains(savedAnchor.node)) {
+    try {
+      const range = document.createRange();
+      range.setStart(savedAnchor.node, savedAnchor.offset);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } catch {
+      // Ignore invalid offsets
+    }
+  }
 }
 
 /**
@@ -233,7 +263,7 @@ export function createRichEditor({ editor, toolbar, onChange }) {
   function setValue(rawText = '') {
     const html = storedTextToHtml(rawText);
     editor.innerHTML = html;
-    normalizeTaskLists(editor);
+    normalizeTaskLists(editor, { fromStorage: true });
     updateEmptyState();
     updateToolbarState();
   }
@@ -1009,7 +1039,11 @@ export function createRichEditor({ editor, toolbar, onChange }) {
   });
 
   // Input event: apply live Markdown shortcuts & notify parent
-  editor.addEventListener('input', () => {
+  editor.addEventListener('input', (event) => {
+    // Checkbox toggles fire `input` before `change`; they are handled by the `change` listener.
+    // Running normalization here used to read the stale data-checked="true" and re-check the box,
+    // which made it impossible to untick a completed task.
+    if (event.target instanceof HTMLInputElement) return;
     tryApplyLiveMarkdown();
     emitChange();
   });
@@ -1073,6 +1107,6 @@ export function createRichEditor({ editor, toolbar, onChange }) {
     getCharacterCount,
     setDisabled,
     focus: () => editor.focus(),
-    isFocused: () => document.activeElement === editor,
+    isFocused: () => editor.contains(document.activeElement),
   };
 }
